@@ -66,6 +66,13 @@ from ucode.state import (
     save_state,
     set_provider_service,
 )
+from ucode.templates import (
+    DEFAULT_TEMPLATES_VOLUME,
+    apply_template,
+    load_composed,
+    resolve_template_names,
+    revert_template,
+)
 from ucode.tracing import configure_tracing_command
 from ucode.ui import (
     console,
@@ -410,6 +417,60 @@ def configure_shared_state(
     return state
 
 
+def apply_templates_to_state(
+    state: dict,
+    explicit_templates: list[str] | None,
+    templates_volume: str,
+) -> dict:
+    """Resolve, fetch, compose, and apply role/project templates for a
+    configured workspace, persisting revert-tracking into state.
+
+    Selection is hybrid: ``explicit_templates`` (from ``--template``/``--role``)
+    wins; otherwise SCIM group membership drives it via the Volume ``index.json``
+    (see :func:`ucode.templates.resolve_template_names`). A missing/empty
+    selection is a no-op. Failures to reach the template store are surfaced as
+    warnings, not launch blockers — templates augment a working gateway config,
+    they don't gate it."""
+    workspace = state["workspace"]
+    token = get_databricks_token(workspace, state.get("profile"))
+    try:
+        names = resolve_template_names(workspace, token, templates_volume, explicit_templates)
+    except RuntimeError as exc:
+        print_warning(f"Could not resolve templates from {templates_volume}: {exc}")
+        return state
+    if not names:
+        if explicit_templates:
+            print_warning("No templates matched the requested names.")
+        return state
+
+    print_section("Templates")
+    print_note(f"Applying: {', '.join(names)}")
+    try:
+        manifest = load_composed(workspace, token, templates_volume, names)
+    except RuntimeError as exc:
+        print_err(f"Failed to load template(s) {', '.join(names)}: {exc}")
+        return state
+
+    # Strict replacement, mirroring the MCP model: undo the previously-applied
+    # template's net-new writes (skills + instruction file) before applying the
+    # new one, so re-configuring with a different template doesn't orphan skills
+    # from the prior run. MCP entries are reconciled separately by
+    # configure_mcp_command's own diff.
+    prior = state.get("template")
+    if isinstance(prior, dict):
+        revert_template(prior)
+
+    tracking = apply_template(workspace, token, templates_volume, manifest)
+    # apply_template -> configure_mcp_command mutates and persists state itself
+    # (it rewrites `mcp_servers`). Re-load so we set `template` on the freshly
+    # saved copy instead of clobbering that MCP update with our stale dict.
+    state = load_state()
+    state["template"] = tracking
+    save_state(state)
+    print_success(f"Template(s) applied: {tracking['template']}")
+    return state
+
+
 def _configure_shared_workspace_states(
     workspaces: list[tuple[str, str | None]],
     tools: list[str] | None,
@@ -717,6 +778,16 @@ def revert() -> int:
     managed_configs = state.get("managed_configs") or {}
     mcp_results = revert_mcp_configs(state)
 
+    # Undo net-new template writes (skills + instruction file) before clearing
+    # state. MCP entries a template registered are handled by revert_mcp_configs
+    # above; this only covers the skills/instructions ucode wrote.
+    template_tracking = state.get("template") or {}
+    template_reverted = bool(
+        template_tracking.get("skills") or template_tracking.get("instructions")
+    )
+    if template_reverted:
+        revert_template(template_tracking)
+
     results: dict[str, bool] = {
         tool: restore_file(
             spec["config_path"], spec["backup_path"], bool(managed_configs.get(tool))
@@ -738,6 +809,8 @@ def revert() -> int:
     if legacy_codex_stripped:
         print_kv("Codex shared config", "ucode entries removed")
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
+    if template_reverted:
+        print_kv("Template resources", "removed")
     for client, spec in MCP_CLIENTS.items():
         print_kv(
             f"{spec['display']} MCP config",
@@ -1090,6 +1163,37 @@ def configure(
             "'low' prints terse single-line status instead.",
         ),
     ] = "normal",
+    template: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--template",
+            help="Apply a role/project template by name from the templates Volume "
+            "(repeatable). Skips SCIM group auto-detection. Alias: --role.",
+        ),
+    ] = None,
+    role: Annotated[
+        str | None,
+        typer.Option(
+            "--role",
+            help="Shorthand for a single --template. Skips SCIM group auto-detection.",
+        ),
+    ] = None,
+    templates_volume: Annotated[
+        str,
+        typer.Option(
+            "--templates-volume",
+            help="UC Volume path holding the template store (index.json + per-role "
+            "template.json). Defaults to the Suffolk store.",
+        ),
+    ] = DEFAULT_TEMPLATES_VOLUME,
+    skip_templates: Annotated[
+        bool,
+        typer.Option(
+            "--skip-templates",
+            help="Don't fetch or apply any role/project templates, even the "
+            "SCIM-group default. Configures only the gateway/agents.",
+        ),
+    ] = False,
 ) -> None:
     """Configure workspace URL and AI Gateway."""
     if ctx.invoked_subcommand is not None:
@@ -1176,6 +1280,22 @@ def configure(
                 tracing_workspaces = [(current, None)] if current else None
             if tracing_workspaces:
                 configure_tracing_command(workspaces=tracing_workspaces)
+
+        # Role/project templates run last, on the now-configured workspace: they
+        # layer MCP services, skills, and instructions on top of a working
+        # gateway config. --skip-templates opts out entirely; otherwise the
+        # SCIM-group default applies even with no explicit --template/--role.
+        if not skip_templates:
+            explicit_templates = list(template or [])
+            if role:
+                explicit_templates.append(role)
+            state = load_state()
+            if state.get("workspace"):
+                apply_templates_to_state(
+                    state,
+                    explicit_templates or None,
+                    templates_volume,
+                )
     except RuntimeError as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None
