@@ -783,7 +783,10 @@ def revert() -> int:
     # above; this only covers the skills/instructions ucode wrote.
     template_tracking = state.get("template") or {}
     template_reverted = bool(
-        template_tracking.get("skills") or template_tracking.get("instructions")
+        template_tracking.get("skills")
+        or template_tracking.get("instructions")
+        or template_tracking.get("permissions")
+        or template_tracking.get("hooks")
     )
     if template_reverted:
         revert_template(template_tracking)

@@ -237,3 +237,53 @@ class TestApplyAndRevert:
         (skill_dir / "SKILL.md").write_text("x")
         tmpl.revert_template({"skills": [str(skill_dir)], "instructions": []})
         assert not skill_dir.exists()
+
+
+class TestApplyTemplatePermissionsHooks:
+    """Phase 3: apply_template records permissions/hooks and threads them into
+    the Claude settings layer; revert_template strips them back out."""
+
+    def test_apply_records_and_layers_permissions_hooks(self, monkeypatch):
+        calls: list = []
+        monkeypatch.setattr(tmpl, "apply_skills", lambda *a, **k: [])
+        monkeypatch.setattr(tmpl, "apply_instructions", lambda *a, **k: None)
+        from ucode.agents import claude as claude_mod
+
+        monkeypatch.setattr(
+            claude_mod,
+            "apply_template_settings",
+            lambda perms, hooks: calls.append(("apply", perms, hooks)),
+        )
+        m = tmpl.TemplateManifest(
+            name="de",
+            permissions={"deny": ["Bash(rm*)"]},
+            hooks={"Stop": [{"hooks": [{"type": "command", "command": "t"}]}]},
+        )
+        tracking = tmpl.apply_template(WS, "tok", "/V", m)
+        assert tracking["permissions"] == {"deny": ["Bash(rm*)"]}
+        assert tracking["hooks"] == {"Stop": [{"hooks": [{"type": "command", "command": "t"}]}]}
+        assert calls == [("apply", m.permissions, m.hooks)]
+
+    def test_revert_calls_settings_revert(self, monkeypatch):
+        calls: list = []
+        from ucode.agents import claude as claude_mod
+
+        monkeypatch.setattr(
+            claude_mod,
+            "revert_template_settings",
+            lambda perms, hooks: calls.append(("revert", perms, hooks)),
+        )
+        tmpl.revert_template(
+            {"skills": [], "instructions": [], "permissions": {"deny": ["X"]}, "hooks": {}}
+        )
+        assert calls == [("revert", {"deny": ["X"]}, {})]
+
+    def test_revert_skips_settings_when_no_permissions_or_hooks(self, monkeypatch):
+        from ucode.agents import claude as claude_mod
+
+        monkeypatch.setattr(
+            claude_mod,
+            "revert_template_settings",
+            lambda *a: (_ for _ in ()).throw(AssertionError("should not be called")),
+        )
+        tmpl.revert_template({"skills": [], "instructions": []})

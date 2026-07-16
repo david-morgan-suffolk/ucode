@@ -362,8 +362,9 @@ def apply_template(workspace: str, token: str, base_path: str, manifest: Templat
 
     MCP entries are already tracked in ``state["mcp_servers"]`` by
     ``configure_mcp_command`` and reverted by the existing MCP revert path, so
-    they are not duplicated here. Permissions/hooks are threaded through the
-    agent overlay separately (Phase 3), not here."""
+    they are not duplicated here. Permissions/hooks are layered onto the Claude
+    settings file and their contributions recorded so a role switch (strict
+    replacement) or ``ucode revert`` can strip exactly what was added."""
     if manifest.mcp_services:
         # Imported lazily: ucode.mcp imports ucode.agents, and importing it at
         # module load would widen this module's import graph unnecessarily.
@@ -380,18 +381,30 @@ def apply_template(workspace: str, token: str, base_path: str, manifest: Templat
     skill_dirs = apply_skills(workspace, token, base_path, manifest)
     instruction_path = apply_instructions(workspace, token, base_path, manifest)
 
+    # Layer permissions/hooks onto the (already-written) Claude settings file.
+    # Imported lazily to avoid a module-load cycle (agents.claude pulls in a
+    # wide graph). Record the contributions verbatim so revert strips exactly
+    # what was added.
+    if manifest.permissions or manifest.hooks:
+        from ucode.agents.claude import apply_template_settings
+
+        apply_template_settings(manifest.permissions, manifest.hooks)
+
     return {
         "template": manifest.name,
         "skills": skill_dirs,
         "instructions": [instruction_path] if instruction_path else [],
+        "permissions": manifest.permissions,
+        "hooks": manifest.hooks,
     }
 
 
 def revert_template(tracking: dict) -> None:
     """Undo the net-new writes recorded by :func:`apply_template`.
 
-    Removes ucode-installed skill dirs and restores the instruction-file backup
-    (or deletes the file if ucode created it with no prior version)."""
+    Removes ucode-installed skill dirs, restores the instruction-file backup
+    (or deletes the file if ucode created it with no prior version), and strips
+    the permission/hook entries added to the Claude settings file."""
     from ucode.config_io import restore_file
 
     for skill_dir in tracking.get("skills") or []:
@@ -400,3 +413,9 @@ def revert_template(tracking: dict) -> None:
             shutil.rmtree(path, ignore_errors=True)
     if tracking.get("instructions"):
         restore_file(CLAUDE_INSTRUCTIONS_PATH, _instructions_backup_path(), managed=True)
+    permissions = tracking.get("permissions") or {}
+    hooks = tracking.get("hooks") or {}
+    if permissions or hooks:
+        from ucode.agents.claude import revert_template_settings
+
+        revert_template_settings(permissions, hooks)
