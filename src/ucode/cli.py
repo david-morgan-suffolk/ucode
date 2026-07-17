@@ -1400,7 +1400,7 @@ def upgrade_cmd() -> None:
     """Upgrade ucode to the latest version from GitHub."""
     import subprocess
 
-    git_url = "git+https://github.com/databricks/ucode"
+    git_url = "git+https://github.com/david-morgan-suffolk/ucode"
     print_section("Upgrade")
     print_kv("Source", git_url)
     try:
