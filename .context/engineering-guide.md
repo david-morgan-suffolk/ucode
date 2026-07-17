@@ -135,16 +135,19 @@ intentionally change.
 
 Transient working files at repo root (`PLAN.md`, `TODO.md`, `NOTES.md`, `SCRATCH.md`)
 are one session's in-flight reasoning — not durable docs, and git-ignored. `AGENTS.md`
-is durable and stays committed. Durable architecture, decisions, and short-lived focus
-notes belong in `.context/` (committed). Plans worth keeping graduate into
-`.context/roadmap-notes.md` or the PR description before the scratch file is discarded.
+is durable and stays committed. Durable architecture and decisions belong in the
+`.context/` guides (committed); ephemeral implementation docs (TDDs, design docs) belong
+in `.context/active/`, deleted by the PR that completes the work. Plans worth keeping
+graduate into a guide, an active doc, or the PR description before the scratch file is
+discarded.
 
 ## Context Maintenance
 
 - Keep `AGENTS.md` compact. Push detail into these files.
 - Update `Commands` above when `pyproject.toml` scripts change.
-- Update `.context/project-context.md` when architecture, integrations, or ownership shift.
-- Record durable decisions (new agents, gateway/auth changes, distribution mechanics) in
-  `.context/roadmap-notes.md`.
-- `.context/current-focus.md` (optional) holds short-lived active-issue notes; delete when
-  resolved.
+- Update `.context/project-context.md` when architecture, integrations, or ownership
+  shift, or when a durable decision (new agents, gateway/auth changes, distribution
+  mechanics) lands.
+- Guides never carry development progress. Roadmaps, TDDs, and design docs go in
+  `.context/active/` as `YYYYMMDD-<doc-title>.md`; the completing PR deletes them. See
+  `.context/README.md` and `.context/writing-tdds.md`.

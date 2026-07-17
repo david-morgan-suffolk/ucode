@@ -8,9 +8,13 @@ lives in `.context/`.
 `ucode` is a Python CLI that configures and launches coding agents through Databricks
 AI Gateway. The package code lives in `src/ucode/`; tests live in `tests/`.
 
-- [.context/project-context.md](.context/project-context.md) — what ucode is, control flow, ownership map, integrations.
-- [.context/engineering-guide.md](.context/engineering-guide.md) — commands, Python standards, UI conventions, testing, safety, commits.
-- [.context/roadmap-notes.md](.context/roadmap-notes.md) — durable decisions, accepted debt, staged work.
+Additional durable context lives in `.context/` (conventions in `.context/README.md`):
+
+- Guides at the `.context/` root are durable tooling/workflow reference and never carry development progress:
+  - [.context/project-context.md](.context/project-context.md) — product purpose, control flow, module ownership, durable decisions.
+  - [.context/engineering-guide.md](.context/engineering-guide.md) — commands, Python standards, UI conventions, testing, safety, commits.
+  - [.context/writing-tdds.md](.context/writing-tdds.md) — how to write a Technical Design Document for this repo.
+- `.context/active/` holds ephemeral implementation docs (TDDs, design docs), named `YYYYMMDD-<doc-title>.md`. When implementing from an active doc, delete the doc in the PR that completes the work; active docs never persist past their implementation.
 
 ## Stack
 
@@ -73,6 +77,7 @@ Full list, search scope, and commit style live in
 ## Maintenance
 
 Update `Commands` here when `pyproject.toml` scripts change. Update
-`.context/project-context.md` when architecture, integrations, or ownership shift.
-Record durable decisions (new agents, gateway/auth changes, distribution mechanics) in
-`.context/roadmap-notes.md`.
+`.context/project-context.md` when architecture, integrations, or ownership shift, or
+when a durable decision (new agents, gateway/auth changes, distribution mechanics)
+lands. Development progress and design docs belong in `.context/active/`, not in the
+guides — see `.context/README.md`.

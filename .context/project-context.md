@@ -59,16 +59,6 @@ dispatchers.
 | `.context/` | Agent-readable durable context. |
 | `README.md` | Human-facing install, usage, commands. |
 
-## Current Product State
-
-Shipped capabilities and command surface are documented in README `## Usage` and
-`## Other Commands`. Active work: role/project template distribution — curated bundles
-of agent resources (MCP services, Claude settings, permissions, hooks) distributed from
-a Unity Catalog Volume (see `templates.py`, branch `templates-distribution`).
-
-For mid-flight operational detail, prefer `.context/current-focus.md` (create when
-needed, delete when resolved).
-
 ## External Integrations
 
 - **Databricks workspace** — CLI/OAuth auth and PAT fallback, AI Gateway v2 model
@@ -83,11 +73,23 @@ needed, delete when resolved).
 - **MLflow tracing** — optional (`ucode[tracing]` extra); routes Claude Code sessions
   to a pre-provisioned Databricks experiment.
 
-## Deferred Work
+## Durable Decisions
 
-- `ty` static type checking is a dev dependency and runnable locally, but not enforced
-  in CI yet.
-- No PyPI publication — distribution is `uv tool install` + UC Volume bundles by design.
+Architecture and distribution choices that outlive any single change. Tooling rationale
+(`uv`/`ruff`/`ty`/`pytest`) lives in `engineering-guide.md`.
+
+- **`typer`** for the CLI surface. Typed subcommands with minimal boilerplate.
+- **`uv_build`** build backend (not hatchling). Single-tool build matching `uv`; ucode
+  ships no wheel to PyPI.
+- **Distribution via `uv tool install` + Unity Catalog Volume bundles, not PyPI.** ucode
+  is an internal developer tool tied to a Databricks workspace, not a public library.
+- **Per-agent isolation.** Agent behavior lives only in `agents/<name>.py` and is reached
+  through the `agents/__init__.py` dispatchers. Adding an agent is one new module plus one
+  registry entry, with no cross-agent coupling.
+- **MCP config applied additively.** ucode augments agent config and never clobbers
+  user-defined servers; `config_io.py` backs up before writing.
+- **MLflow tracing is an optional `[tracing]` extra.** A plain `ucode` install stays lean;
+  only the Claude Code tracing path needs the Python MLflow runtime.
 
 ## Non-Goals
 
