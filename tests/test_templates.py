@@ -287,3 +287,75 @@ class TestApplyTemplatePermissionsHooks:
             lambda *a: (_ for _ in ()).throw(AssertionError("should not be called")),
         )
         tmpl.revert_template({"skills": [], "instructions": []})
+
+
+class TestApplyTemplateMcpAdditive:
+    """MCP application is additive and its additions are tracked so revert
+    removes only the template's servers, never the user's."""
+
+    def test_apply_records_only_newly_added_servers(self, monkeypatch):
+        monkeypatch.setattr(tmpl, "apply_skills", lambda *a, **k: [])
+        monkeypatch.setattr(tmpl, "apply_instructions", lambda *a, **k: None)
+        from ucode import mcp as mcp_mod
+
+        # State before: user already has jira. After configure_mcp_command runs
+        # (additive), github + dbt are appended; jira remains.
+        states = iter(
+            [
+                {"mcp_servers": [{"name": "othercat-team-jira"}]},
+                {
+                    "mcp_servers": [
+                        {"name": "othercat-team-jira"},
+                        {"name": "system-ai-github"},
+                        {"name": "system-ai-dbt"},
+                    ]
+                },
+            ]
+        )
+        # apply_template imports load_state lazily from ucode.state; patch there.
+        import ucode.state as state_mod
+
+        monkeypatch.setattr(state_mod, "load_state", lambda: next(states))
+        call: list = []
+        monkeypatch.setattr(
+            mcp_mod,
+            "configure_mcp_command",
+            lambda services, additive=False: call.append((services, additive)) or 0,
+        )
+        m = tmpl.TemplateManifest(name="de", mcp_services=["system.ai.github", "system.ai.dbt"])
+        tracking = tmpl.apply_template(WS, "tok", "/V", m)
+
+        # additive mode used; only the two new servers recorded (jira excluded).
+        assert call == [({"system.ai.github", "system.ai.dbt"}, True)]
+        assert tracking["mcp_added"] == ["system-ai-github", "system-ai-dbt"]
+
+    def test_revert_removes_only_tracked_servers(self, monkeypatch):
+        import ucode.state as state_mod
+        from ucode import mcp as mcp_mod
+
+        removed: list[tuple[str, str]] = []
+        saved: list[dict] = []
+        monkeypatch.setattr(
+            state_mod,
+            "load_state",
+            lambda: {
+                "mcp_servers": [
+                    {"name": "othercat-team-jira", "clients": ["claude"]},
+                    {"name": "system-ai-github", "clients": ["claude"]},
+                    {"name": "system-ai-dbt", "clients": ["claude"]},
+                ]
+            },
+        )
+        monkeypatch.setattr(state_mod, "save_state", lambda s: saved.append(s))
+        monkeypatch.setattr(
+            mcp_mod,
+            "remove_client_mcp_server",
+            lambda client, name: removed.append((client, name)) or [],
+        )
+        tmpl.revert_template(
+            {"skills": [], "instructions": [], "mcp_added": ["system-ai-github", "system-ai-dbt"]}
+        )
+
+        # Only the template's two servers unregistered; jira untouched and kept.
+        assert sorted(removed) == [("claude", "system-ai-dbt"), ("claude", "system-ai-github")]
+        assert [s["name"] for s in saved[-1]["mcp_servers"]] == ["othercat-team-jira"]

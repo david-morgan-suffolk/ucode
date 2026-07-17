@@ -353,30 +353,42 @@ def apply_template(workspace: str, token: str, base_path: str, manifest: Templat
     """Apply a composed manifest to the local machine.
 
     Registers MCP services (reusing the existing ``configure mcp --services``
-    backbone), copies skills, and writes the instruction file. Returns a
-    tracking dict persisted into state so ``ucode revert`` can undo the
-    net-new writes:
+    backbone in *additive* mode — see below), copies skills, and writes the
+    instruction file. Returns a tracking dict persisted into state so
+    ``ucode revert`` and role switches can undo the net-new writes:
 
         {"template": <name>, "skills": [<dest dir>, ...],
-         "instructions": [<path>, ...]}
+         "instructions": [<path>, ...], "mcp_added": [<server name>, ...],
+         "permissions": {...}, "hooks": {...}}
 
-    MCP entries are already tracked in ``state["mcp_servers"]`` by
-    ``configure_mcp_command`` and reverted by the existing MCP revert path, so
-    they are not duplicated here. Permissions/hooks are layered onto the Claude
-    settings file and their contributions recorded so a role switch (strict
-    replacement) or ``ucode revert`` can strip exactly what was added."""
+    MCP application is *additive*: a template layers its services on top of
+    whatever MCP servers the user (or a prior template) already registered,
+    never replacing the whole set. This guards against the strict-replacement
+    footgun where applying a role bundle would tear out a user's own
+    hand-added servers. We diff ``state["mcp_servers"]`` before/after to record
+    exactly which named servers this template introduced, so
+    :func:`revert_template` removes only those and leaves the user's intact.
+    Permissions/hooks are layered onto the Claude settings file and their
+    contributions recorded so a role switch or ``ucode revert`` can strip
+    exactly what was added."""
+    mcp_added: list[str] = []
     if manifest.mcp_services:
         # Imported lazily: ucode.mcp imports ucode.agents, and importing it at
         # module load would widen this module's import graph unnecessarily.
         from ucode.mcp import configure_mcp_command
+        from ucode.state import load_state
 
+        before = _mcp_server_names(load_state())
         print_note(f"Registering {len(manifest.mcp_services)} MCP service(s) from template...")
         try:
-            configure_mcp_command(services=set(manifest.mcp_services))
+            configure_mcp_command(services=set(manifest.mcp_services), additive=True)
         except RuntimeError as exc:
             # Soft-fail: a service the token can't see, or a schema mismatch,
             # shouldn't abort skills/instructions. UC ACLs are the boundary.
             print_warning(f"Some MCP services could not be registered: {exc}")
+        after = _mcp_server_names(load_state())
+        # Order-stable diff: servers present after but not before are ours.
+        mcp_added = [name for name in after if name not in before]
 
     skill_dirs = apply_skills(workspace, token, base_path, manifest)
     instruction_path = apply_instructions(workspace, token, base_path, manifest)
@@ -394,17 +406,30 @@ def apply_template(workspace: str, token: str, base_path: str, manifest: Templat
         "template": manifest.name,
         "skills": skill_dirs,
         "instructions": [instruction_path] if instruction_path else [],
+        "mcp_added": mcp_added,
         "permissions": manifest.permissions,
         "hooks": manifest.hooks,
     }
+
+
+def _mcp_server_names(state: dict) -> list[str]:
+    """Ordered names of the MCP servers tracked in ``state``."""
+    names: list[str] = []
+    for server in state.get("mcp_servers") or []:
+        name = server.get("name")
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
 
 
 def revert_template(tracking: dict) -> None:
     """Undo the net-new writes recorded by :func:`apply_template`.
 
     Removes ucode-installed skill dirs, restores the instruction-file backup
-    (or deletes the file if ucode created it with no prior version), and strips
-    the permission/hook entries added to the Claude settings file."""
+    (or deletes the file if ucode created it with no prior version), removes the
+    MCP servers this template added (only those — additive application means
+    the user's own servers must survive), and strips the permission/hook
+    entries added to the Claude settings file."""
     from ucode.config_io import restore_file
 
     for skill_dir in tracking.get("skills") or []:
@@ -413,9 +438,41 @@ def revert_template(tracking: dict) -> None:
             shutil.rmtree(path, ignore_errors=True)
     if tracking.get("instructions"):
         restore_file(CLAUDE_INSTRUCTIONS_PATH, _instructions_backup_path(), managed=True)
+    _revert_template_mcp(tracking.get("mcp_added") or [])
     permissions = tracking.get("permissions") or {}
     hooks = tracking.get("hooks") or {}
     if permissions or hooks:
         from ucode.agents.claude import revert_template_settings
 
         revert_template_settings(permissions, hooks)
+
+
+def _revert_template_mcp(added_names: list[str]) -> None:
+    """Remove the MCP servers a template added, from both the client configs
+    and ucode state, leaving every other server registered.
+
+    ``added_names`` is the diff recorded by :func:`apply_template`. We look each
+    server up in state to learn which clients it was registered with, unregister
+    it there, then drop it from ``state["mcp_servers"]``. A name that is no
+    longer in state (already reverted, or removed by a full ``ucode revert``
+    which clears state wholesale) is simply skipped."""
+    if not added_names:
+        return
+    from ucode.mcp import MCP_CLIENTS, remove_client_mcp_server
+    from ucode.state import load_state, save_state
+
+    state = load_state()
+    servers = list(state.get("mcp_servers") or [])
+    remove = set(added_names)
+    kept: list[dict] = []
+    for server in servers:
+        name = server.get("name")
+        if isinstance(name, str) and name in remove:
+            for client in server.get("clients") or []:
+                if client in MCP_CLIENTS:
+                    remove_client_mcp_server(client, name)
+        else:
+            kept.append(server)
+    if len(kept) != len(servers):
+        state["mcp_servers"] = kept
+        save_state(state)

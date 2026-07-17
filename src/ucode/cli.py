@@ -787,6 +787,7 @@ def revert() -> int:
         or template_tracking.get("instructions")
         or template_tracking.get("permissions")
         or template_tracking.get("hooks")
+        or template_tracking.get("mcp_added")
     )
     if template_reverted:
         revert_template(template_tracking)

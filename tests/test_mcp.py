@@ -1642,6 +1642,127 @@ class TestConfigureMcpServicesSubset:
             )
 
 
+class TestUnionMcpServers:
+    """`_union_mcp_servers` layers additions onto originals without dropping."""
+
+    def _s(self, name, clients=("claude",)):
+        return {
+            "name": name,
+            "url": f"{WS}/x/{name}",
+            "auth": "env:OAUTH_TOKEN",
+            "clients": list(clients),
+        }
+
+    def test_appends_new_and_preserves_originals(self):
+        out = mcp._union_mcp_servers([self._s("a"), self._s("b")], [self._s("c")])
+        assert [s["name"] for s in out] == ["a", "b", "c"]
+
+    def test_same_name_addition_replaces_in_place(self):
+        updated = self._s("a", clients=["claude", "codex"])
+        out = mcp._union_mcp_servers([self._s("a"), self._s("b")], [updated])
+        assert [s["name"] for s in out] == ["a", "b"]  # no duplicate, order kept
+        assert out[0]["clients"] == ["claude", "codex"]
+
+    def test_empty_additions_is_identity(self):
+        originals = [self._s("a")]
+        assert mcp._union_mcp_servers(originals, []) == originals
+
+
+class TestConfigureMcpAdditive:
+    """`additive=True` layers selected services on top of the user's existing
+    servers instead of strict-replacing — the template-application guard."""
+
+    def test_additive_keeps_user_servers_in_other_locations(self, monkeypatch):
+        # A user's hand-added server in a DIFFERENT location must survive a
+        # template applying system.ai services additively.
+        user_server = {
+            "name": "othercat-team-jira",
+            "url": f"{WS}/ai-gateway/mcp-services/othercat.team.jira",
+            "auth": "env:OAUTH_TOKEN",
+            "clients": ["claude"],
+        }
+        configured: list[tuple[str, str, str, dict]] = []
+        removed: list[tuple[str, str]] = []
+        saved_states: list[dict] = []
+        _stub_location_base(monkeypatch, {**CLAUDE_STATE, "mcp_servers": [user_server]})
+        monkeypatch.setattr(
+            mcp,
+            "list_mcp_services",
+            lambda workspace, token, parent: (["system.ai.github", "system.ai.dbt"], None),
+        )
+        monkeypatch.setattr(
+            mcp,
+            "configure_client_mcp_server",
+            lambda client, name, url, entry: configured.append((client, name, url, entry)) or [],
+        )
+        monkeypatch.setattr(
+            mcp,
+            "remove_client_mcp_server",
+            lambda client, name: removed.append((client, name)) or [],
+        )
+        monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
+
+        assert (
+            mcp.configure_mcp_command(
+                location="system.ai",
+                services={"system.ai.github", "system.ai.dbt"},
+                additive=True,
+            )
+            == 0
+        )
+
+        # Nothing removed; the two template services added; the user's jira kept.
+        assert removed == []
+        assert sorted(c[1] for c in configured) == ["system-ai-dbt", "system-ai-github"]
+        assert sorted(s["name"] for s in saved_states[-1]["mcp_servers"]) == [
+            "othercat-team-jira",
+            "system-ai-dbt",
+            "system-ai-github",
+        ]
+
+    def test_additive_keeps_sibling_service_not_in_selection(self, monkeypatch):
+        # Even within the SAME location, a sibling the template doesn't name
+        # must survive additive application (strict-replace would drop it).
+        slack = {
+            "name": "system-ai-slack",
+            "url": f"{WS}/ai-gateway/mcp-services/system.ai.slack",
+            "auth": "env:OAUTH_TOKEN",
+            "clients": ["claude"],
+        }
+        removed: list[tuple[str, str]] = []
+        saved_states: list[dict] = []
+        _stub_location_base(monkeypatch, {**CLAUDE_STATE, "mcp_servers": [slack]})
+        monkeypatch.setattr(
+            mcp,
+            "list_mcp_services",
+            lambda workspace, token, parent: (["system.ai.github", "system.ai.slack"], None),
+        )
+        monkeypatch.setattr(
+            mcp,
+            "configure_client_mcp_server",
+            lambda client, name, url, entry: [],
+        )
+        monkeypatch.setattr(
+            mcp,
+            "remove_client_mcp_server",
+            lambda client, name: removed.append((client, name)) or [],
+        )
+        monkeypatch.setattr(mcp, "save_state", lambda state: saved_states.append(state.copy()))
+
+        assert (
+            mcp.configure_mcp_command(
+                location="system.ai", services={"system.ai.github"}, additive=True
+            )
+            == 0
+        )
+
+        assert removed == []
+        assert sorted(s["name"] for s in saved_states[-1]["mcp_servers"]) == [
+            "system-ai-github",
+            "system-ai-slack",
+        ]
+
+
 class TestRevertMcpConfigs:
     def test_removes_cli_registered_servers_and_restores_copilot_config(self, monkeypatch):
         removed: list[tuple[str, str]] = []

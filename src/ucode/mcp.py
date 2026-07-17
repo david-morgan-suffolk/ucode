@@ -557,6 +557,27 @@ def _servers_by_name(mcp_servers: list[dict]) -> dict[str, dict]:
     return servers
 
 
+def _union_mcp_servers(originals: list[dict], additions: list[dict]) -> list[dict]:
+    """Return ``originals`` with ``additions`` layered on top (additive mode).
+
+    Original ordering is preserved; a server in ``additions`` that shares a
+    name with an original replaces that original in place (the re-resolved
+    entry is authoritative for clients/url); genuinely new servers are appended
+    in ``additions`` order. Nothing is dropped — this is the union used for
+    template MCP application so a role bundle can only add servers."""
+    additions_by_name = _servers_by_name(additions)
+    original_names = {name for s in originals if (name := _server_name(s))}
+    result: list[dict] = []
+    for server in originals:
+        name = _server_name(server)
+        result.append(additions_by_name.get(name, server) if name else server)
+    for server in additions:
+        name = _server_name(server)
+        if name and name not in original_names:
+            result.append(server)
+    return result
+
+
 def _mcp_entry_url_host(entry: dict) -> str | None:
     """Return the host of an MCP entry's URL, or ``None`` if missing/malformed."""
     url = entry.get("url")
@@ -1177,7 +1198,25 @@ def _resolve_location_mcp_servers(
     return working_servers
 
 
-def configure_mcp_command(location: str | None = None, services: set[str] | None = None) -> int:
+def configure_mcp_command(
+    location: str | None = None,
+    services: set[str] | None = None,
+    additive: bool = False,
+) -> int:
+    """Register Databricks-fronted MCP services with the configured coding
+    agents.
+
+    The default (``additive=False``) is *strict replacement*: the user owns the
+    whole MCP picture, so the configured set becomes exactly what's selected and
+    any previously-registered server not selected is removed. This is right for
+    the interactive `ucode configure mcp` flow.
+
+    ``additive=True`` layers the selected services *on top of* whatever is
+    already registered — nothing is removed. This is for role/project template
+    application, where a template contributes a role's MCP services without
+    clobbering servers the user (or a prior template) added. Only meaningful
+    with an explicit ``services`` set; the interactive discovery path below
+    always owns the full list and ignores it."""
     if services is not None and location is None:
         # `--services` works standalone with full names (`system.ai.github`): the
         # `<catalog>.<schema>` to configure is derived from them. Bare short names
@@ -1234,9 +1273,17 @@ def configure_mcp_command(location: str | None = None, services: set[str] | None
 
     original_mcp_servers_for_location: list[dict] = list(state.get("mcp_servers") or [])
     if location is not None:
-        working_mcp_servers = _resolve_location_mcp_servers(
+        resolved = _resolve_location_mcp_servers(
             workspace, profile, clients, location, original_mcp_servers_for_location, services
         )
+        if additive:
+            # Layer the resolved servers on top of the existing set instead of
+            # replacing it: keep every original server, and add/update only the
+            # ones the selection resolved. apply_mcp_server_changes never sees a
+            # server drop out of `working`, so nothing the user had is removed.
+            working_mcp_servers = _union_mcp_servers(original_mcp_servers_for_location, resolved)
+        else:
+            working_mcp_servers = resolved
         changed = apply_mcp_server_changes(
             original_mcp_servers_for_location, working_mcp_servers, clients
         )
