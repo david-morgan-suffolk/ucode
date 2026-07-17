@@ -1,23 +1,20 @@
-# Unity AI Gateway Coding CLI (ucode)
+# ucode
 
-`ucode` is a lightweight launcher for running Codex, Claude Code, Gemini CLI, OpenCode, GitHub Copilot CLI, and Pi through Databricks.
+Launch coding agents through Databricks AI Gateway. No API keys. Workspace creds only.
 
-## Requirements
+Agents: Codex, Claude Code, Gemini CLI, OpenCode, GitHub Copilot CLI, Pi.
 
-- Python 3.12+ — install with `uv` ([uv.astral.sh](https://docs.astral.sh/uv/getting-started/installation/))
-- `npm` if tool CLIs need to be installed automatically
-
-## Installation
+## Install
 
 ```bash
-uv tool install git+https://github.com/databricks/ucode
+uv tool install git+https://github.com/david-morgan-suffolk/ucode
 ```
 
----
+Need Python 3.12+ (via [uv](https://docs.astral.sh/uv/getting-started/installation/)). `npm` if agent CLIs auto-install.
 
-## Usage
+## Run
 
-Just run the tool you want:
+Pick agent, run:
 
 ```bash
 ucode codex      # OpenAI Codex
@@ -28,125 +25,125 @@ ucode copilot    # GitHub Copilot CLI
 ucode pi         # Pi
 ```
 
-On first launch, `ucode` will prompt for your Databricks workspace URL, authenticate, and configure that tool automatically. Subsequent launches go straight to the agent.
+First launch → prompts workspace URL, authenticates, configures agent. Later launches go straight in.
 
-Pass flags directly to the underlying tool:
+Flags pass through to underlying tool:
 
 ```bash
 ucode claude -r          # resume last session
 ucode codex --full-auto
 ```
 
-All agents route through Databricks AI Gateway using your workspace credentials — no API keys required.
+Skip per-launch auth + gateway re-check (trust prior configure):
 
-To configure all tools at once:
+```bash
+ucode claude --skip-preflight
+```
+
+## Configure
+
+All tools at once:
 
 ```bash
 ucode configure
 ```
 
-To configure specific tools without the picker, pass a comma-separated list:
+Specific tools, no picker:
 
 ```bash
-ucode configure --agents claude,codex
+ucode configure --agents claude,codex 
+# supported: codex,claude,gemini,opencode,copilot
 ```
 
-Available agent names are `codex`, `claude`, `gemini`, `opencode`, `copilot`, and `pi`.
-
-To configure without the workspace picker, pass a comma-separated list of workspaces:
-
+Skip picker, pass workspaces:
 ```bash
+# Multiple workspaces → logs into each. Launch commands use first.
 ucode configure --workspaces https://first.databricks.com,https://second.databricks.com
-```
 
-When multiple workspaces are provided, `ucode` logs into and saves state for each workspace. Launch commands such as `ucode codex` use the first workspace in the list.
-
-Alternatively, pass existing Databricks CLI profiles (from `~/.databrickscfg`) instead of workspace URLs — each profile's host supplies the workspace URL:
-
-```bash
+# Use existing Databricks CLI profiles (host = workspace URL) instead:
 ucode configure --profiles DEFAULT --agents claude,codex
 ```
 
-Auth behaves the same as `--workspaces`: an OAuth `databricks auth login` is forced by default.
+Auth same as `--workspaces`: OAuth login forced by default.
 
-For CI or headless environments where the profile holds a personal access token (`auth_type = pat` in `~/.databrickscfg`), add `--use-pat`. It must be combined with `--profiles` — ucode never picks up a PAT implicitly — and runs no interactive login: the profile's token is used for the whole setup (and by launched agents afterwards), with workspace access verified against the AI Gateway. `--skip-validate` additionally skips the post-configure test message sent through each agent, so configure only writes config files with the freshly discovered models. Together these make setup fully non-interactive:
+## Templates
+
+Org publishes a **template store** (a UC Volume of curated agent bundles) → `ucode configure` fetches + applies the ones for you. Bundle can hold: MCP tool sets (additive — your MCPs kept), Claude skills, `CLAUDE.md` instructions, permission policies, hooks.
+
+Auto-selected from Databricks group membership, or named:
 
 ```bash
+ucode configure                       # auto-detect from groups
+ucode configure --role data-engineer  # named role (skips auto-detect)
+ucode configure --template shared --template data-engineer
+```
+
+Point at a store, or opt out:
+
+```bash
+ucode configure --templates-volume /Volumes/<catalog>/<schema>/<volume>
+ucode configure --skip-templates
+```
+
+Store unreachable → configure still succeeds. Unavailable tool/model in a template → skipped. Everything applied is tracked; `ucode revert` removes it.
+
+
+### Headless / CI
+
+Profile holds a PAT (`auth_type = pat` in `~/.databrickscfg`) → add `--use-pat`. Requires `--profiles`. No browser. Access checked against AI Gateway.
+
+```bash
+# --skip-validate also skips the post-configure test message. Fully non-interactive
 ucode configure --profiles DEFAULT --agents claude,codex --use-pat --skip-validate --skip-upgrade
 ```
 
-### MCP servers (optional)
+## Model Provider routing
+
+`ucode claude` and `ucode codex` take `--provider <catalog>.<schema>.<name>` → route through a Unity Catalog Model Provider Service (external Anthropic/OpenAI models). Skips Databricks model pinning. Pass before any `--`:
+
+```bash
+ucode claude --provider my_catalog.my_schema.anthropic
+```
+
+## MCP servers
+
+Adds Databricks MCP servers to MCP-capable tools (Codex, Claude, Gemini, OpenCode, Copilot). Picker sources: external MCP connections, Databricks SQL, Genie spaces, Databricks Apps, managed MCPs (Vector Search, UC Functions, ...), custom URL. Auth uses a Databricks token ucode sets at launch.
 
 ```bash
 ucode configure mcp
 ```
 
-Add Databricks MCP servers to installed MCP-capable tools: Codex, Claude Code, Gemini CLI, OpenCode, and GitHub Copilot CLI.
-Options are shown in this order:
 
-- Discovered external MCP connections
-- Databricks SQL
-- Managed Databricks MCPs (Vector Search, UC Functions, etc.)
-- Custom MCP server URL
+## Tracing
 
-Discovered external MCP connections are listed directly. MCP auth uses a Databricks token that
-`ucode` sets when launching each tool.
-
-### Role/project templates (optional)
-
-If your organization publishes a **template store** — a Databricks Unity Catalog
-Volume holding curated agent bundles — `ucode configure` can fetch and apply the
-templates that apply to you. A template can bundle any of:
-
-- MCP tool sets (applied additively, so your own MCP servers are preserved)
-- Claude Code skills
-- instruction files (`CLAUDE.md` content)
-- permission policies (allow / deny / ask)
-- hooks
-
-Templates are selected automatically from your Databricks group membership, or
-explicitly by name:
+Send coding-session traces to an MLflow experiment in your workspace:
 
 ```bash
-ucode configure                       # auto-detect templates from your groups
-ucode configure --role data-engineer  # apply a named role bundle (skips auto-detect)
-ucode configure --template shared --template data-engineer  # apply several
+ucode configure --tracing   # enable while configuring
+ucode configure tracing     # enable standalone
+ucode configure tracing --disable
+ucode status                # shows the tracing block.
+
+# Claude tracing needs the extra:
+uv tool install "ucode[tracing]"
 ```
 
-Point at a specific store, or opt out entirely:
 
-```bash
-ucode configure --templates-volume /Volumes/<catalog>/<schema>/<volume>
-ucode configure --skip-templates      # gateway/agents only, no templates
-```
+## Commands
 
-Templates only augment a working gateway config — if the store is unreachable,
-configuration still succeeds. A template that names a tool or model you can't
-access simply skips it. Everything a template applies is tracked, and
-`ucode revert` removes it (leaving your own config intact).
+| Command | Does |
+|---------|------|
+| `ucode status` | Show workspace, base URLs, config files, models, tracing |
+| `ucode usage` | AI Gateway usage summary (last 7 days) |
+| `ucode revert` | Clear state, restore backed-up config files |
+| `ucode upgrade` | Upgrade ucode from GitHub |
+| `ucode configure --dry-run` | Preview config files, don't write |
+| `ucode configure --tracing` | Enable MLflow tracing while configuring |
+| `ucode configure tracing` | Configure tracing (`--disable` turns off) |
 
----
+## Managed files
 
-## Other Commands
-
-| Command | Description |
-|---------|-------------|
-| `ucode status` | Show current workspace, base URLs, managed config files, and selected models |
-| `ucode usage` | Show AI Gateway usage summary |
-| `ucode revert` | Clear saved state and restore backed-up config files |
-| `ucode configure --dry-run` | Preview config files without writing them |
-| `ucode configure --agents claude,codex` | Configure specific agents without the interactive picker |
-| `ucode configure --workspaces https://first.databricks.com,https://second.databricks.com` | Configure workspaces without the interactive picker |
-| `ucode configure --profiles DEFAULT` | Configure using existing Databricks CLI profiles (hosts come from `~/.databrickscfg`) |
-| `ucode configure --profiles DEFAULT --use-pat` | Authenticate with the profile's personal access token — no browser login |
-| `ucode configure --skip-validate` | Write configs without sending a test message through each agent |
-| `ucode configure --role data-engineer` | Apply a named role/project template bundle (skips group auto-detect) |
-| `ucode configure --templates-volume <path>` | Fetch templates from a specific Unity Catalog Volume store |
-| `ucode configure --skip-templates` | Configure gateway/agents only; don't fetch or apply any templates |
-
-## Managed Local Files
-
-`ucode` manages these files:
+ucode manages these (backs up first; `ucode revert` restores):
 
 | File | Tool |
 |------|------|
@@ -157,56 +154,43 @@ access simply skips it. Everything a template applies is tracked, and
 | `~/.copilot/.env` | GitHub Copilot CLI |
 | `~/.pi/agent/models.json` | Pi |
 
-Existing files are backed up before being overwritten. `ucode revert` restores backups.
+## Docs
 
-
-## Documentation
-
-- [Databricks AI Gateway overview](https://docs.databricks.com/aws/en/ai-gateway/overview-beta)
-- [Databricks AI Gateway coding agent integration](https://docs.databricks.com/aws/en/ai-gateway/coding-agent-integration-beta)
-- [Databricks CLI authentication](https://docs.databricks.com/aws/en/dev-tools/cli/authentication)
-- [Monitor AI Gateway usage](https://docs.databricks.com/aws/en/ai-gateway/configure-ai-gateway-endpoints#track-usage-of-an-endpoint)
+- [AI Gateway overview](https://docs.databricks.com/aws/en/ai-gateway/overview-beta)
+- [Coding agent integration](https://docs.databricks.com/aws/en/ai-gateway/coding-agent-integration-beta)
+- [Databricks CLI auth](https://docs.databricks.com/aws/en/dev-tools/cli/authentication)
+- [Monitor gateway usage](https://docs.databricks.com/aws/en/ai-gateway/configure-ai-gateway-endpoints#track-usage-of-an-endpoint)
 
 ## Contributing
 
-Contributions are welcome.
-
-### Getting started
-
 ```bash
-git clone https://github.com/databricks/ucode
+git clone https://github.com/david-morgan-suffolk/ucode
 cd ucode
 uv sync
 ```
 
-### Development workflow
+Workflow: branch off `main` → change → test → PR.
 
-1. Create a feature branch off `main`.
-2. Make your changes — keep them scoped to the requested behavior.
-3. Run the test suite before pushing:
+```bash
+uv run pytest          # unit tests
+uv run ruff check .    # lint
+```
 
-   ```bash
-   uv run pytest          # unit tests
-   uv run ruff check .    # lint
-   ```
+E2E against a real workspace:
 
-4. For end-to-end testing against a real workspace:
+```bash
+UCODE_TEST_WORKSPACE=<db_workspace_url> uv run pytest tests/test_e2e.py -v
+```
 
-   ```bash
-   UCODE_TEST_WORKSPACE=<db_workspace_url> uv run pytest tests/test_e2e.py -v
-   ```
+Add an agent:
 
-5. Open a pull request against `main`.
-
-### Adding a new agent
-
-- Add `src/ucode/agents/<name>.py` with at least `write_tool_config`, `launch`, `default_model`, and `validate_cmd`.
-- Register it in `src/ucode/agents/__init__.py`.
-- Add focused tests under `tests/`.
+- Add `src/ucode/agents/<name>.py` with `write_tool_config`, `launch`, `default_model`, `validate_cmd`.
+- Register in `src/ucode/agents/__init__.py`.
+- Add tests under `tests/`.
 
 ## Security
 
-Please report security vulnerabilities to security@databricks.com rather than opening a public issue.
+Report vulnerabilities to security@databricks.com. Don't open a public issue.
 
 ## License
 
