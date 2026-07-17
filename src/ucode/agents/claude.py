@@ -603,6 +603,105 @@ def _merge_claude_settings(base: dict, overlay: dict) -> dict:
     return merged
 
 
+# render_overlay is the only place ucode itself writes to `permissions`, and it
+# writes exactly this one deny entry (removing the built-in WebSearch tool). A
+# template that redundantly denies WebSearch shares this entry, so template
+# revert must never strip it.
+_UCODE_OWNED_DENY = ("WebSearch",)
+
+
+def _as_str_list(value: object) -> list[str]:
+    return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
+
+def apply_template_settings(permissions: dict, hooks: dict) -> None:
+    """Layer a composed template's ``permissions`` and ``hooks`` onto ucode's
+    managed Claude settings file (the one handed to Claude via ``--settings``).
+
+    Templates apply *after* ``write_tool_config``, so the file already carries
+    ucode's gateway env, the WebSearch deny, and any tracing Stop hook; this
+    augments it in place. Permission ``allow``/``deny``/``ask`` lists are
+    unioned and hook entries are concatenated per event — the same
+    "both sides survive" semantics as the launch-time caller-settings merge
+    (:func:`_union_claude_hooks`). :func:`revert_template_settings` strips
+    exactly these again on a role switch.
+
+    Scoped to Claude: Codex/Gemini permission and hook formats differ, and the
+    plan defers multi-agent policy to a later phase. No-op when Claude has no
+    managed settings file — templates run after agent config, so its absence
+    means Claude wasn't configured and there's nothing to layer onto."""
+    if (not permissions and not hooks) or not CLAUDE_SETTINGS_PATH.exists():
+        return
+    settings = read_json_safe(CLAUDE_SETTINGS_PATH)
+    if permissions:
+        perms = settings.get("permissions")
+        if not isinstance(perms, dict):
+            perms = {}
+        for key in ("allow", "deny", "ask"):
+            additions = _as_str_list(permissions.get(key))
+            if not additions:
+                continue
+            current = perms.get(key)
+            existing = list(current) if isinstance(current, list) else []
+            for rule in additions:
+                if rule not in existing:
+                    existing.append(rule)
+            perms[key] = existing
+        settings["permissions"] = perms
+    if hooks:
+        base = settings.get("hooks")
+        settings["hooks"] = _union_claude_hooks(base if isinstance(base, dict) else {}, hooks)
+    write_json_file(CLAUDE_SETTINGS_PATH, settings)
+
+
+def revert_template_settings(permissions: dict, hooks: dict) -> None:
+    """Remove the permission and hook entries a template added via
+    :func:`apply_template_settings`.
+
+    Exercised on template strict-replacement (role switch), where
+    ``write_tool_config`` has already rewritten the file but would otherwise
+    carry a prior template's unioned hooks (and lingering ``allow``/``ask``
+    rules) into the fresh settings. A full ``ucode revert`` removes the managed
+    settings file outright, so this only matters while the file must survive.
+    ucode-owned deny entries (``WebSearch``) are never stripped, since a
+    template merely shares that entry rather than owning it."""
+    if not CLAUDE_SETTINGS_PATH.exists() or (not permissions and not hooks):
+        return
+    settings = read_json_safe(CLAUDE_SETTINGS_PATH)
+    perms = settings.get("permissions")
+    if permissions and isinstance(perms, dict):
+        for key in ("allow", "deny", "ask"):
+            removals = set(_as_str_list(permissions.get(key)))
+            if key == "deny":
+                removals -= set(_UCODE_OWNED_DENY)
+            existing = perms.get(key)
+            if not isinstance(existing, list) or not removals:
+                continue
+            kept = [r for r in existing if r not in removals]
+            if kept:
+                perms[key] = kept
+            else:
+                perms.pop(key, None)
+        if not perms:
+            settings.pop("permissions", None)
+    hooks_block = settings.get("hooks")
+    if hooks and isinstance(hooks_block, dict):
+        for event, entries in hooks.items():
+            if not isinstance(entries, list):
+                continue
+            existing = hooks_block.get(event)
+            if not isinstance(existing, list):
+                continue
+            kept = [e for e in existing if e not in entries]
+            if kept:
+                hooks_block[event] = kept
+            else:
+                hooks_block.pop(event, None)
+        if not hooks_block:
+            settings.pop("hooks", None)
+    write_json_file(CLAUDE_SETTINGS_PATH, settings)
+
+
 def _build_claude_argv(binary: str, tool_args: list[str]) -> list[str]:
     """Build the ``claude`` argv, composing any caller ``--settings`` with
     ucode's managed settings.

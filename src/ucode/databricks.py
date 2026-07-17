@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Literal, cast, overload
 from urllib import error as urllib_error
 from urllib import request as urllib_request
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 from databricks.sql.exc import ServerOperationError
 
@@ -307,6 +307,102 @@ def get_current_user_name(workspace: str, token: str) -> str | None:
             if isinstance(entry, dict) and isinstance(entry.get("value"), str):
                 return entry["value"].strip()
     return None
+
+
+def get_current_user_groups(workspace: str, token: str) -> list[str]:
+    """Return the current user's SCIM group display names, or [] on failure.
+
+    SCIM `/Me` returns `groups: [{"display": "data-engineers", "value": "<id>",
+    ...}, ...]`. We surface the human-readable `display` names so a template
+    index can map group name -> template set. Failures (feature off, network,
+    a workspace that omits groups from `/Me`) return [] so callers fall back to
+    the default template rather than erroring."""
+    hostname = workspace_hostname(workspace)
+    payload, _ = _http_get_json(f"https://{hostname}/api/2.0/preview/scim/v2/Me", token)
+    if not isinstance(payload, dict):
+        return []
+    groups = payload.get("groups")
+    if not isinstance(groups, list):
+        return []
+    names: list[str] = []
+    for entry in groups:
+        if not isinstance(entry, dict):
+            continue
+        display = entry.get("display")
+        if isinstance(display, str) and display.strip():
+            names.append(display.strip())
+    return names
+
+
+def _volume_files_api_path(volume_path: str) -> str:
+    """URL-encode a `/Volumes/...` path for the Files API, preserving slashes.
+
+    The Files API addresses a file as `/api/2.0/fs/files/Volumes/<cat>/<schema>/
+    <vol>/<path>` — note the leading `/Volumes` (not `/`). We accept either form
+    and normalize to the leading `Volumes/...` the API expects."""
+    path = volume_path.strip()
+    if path.startswith("/"):
+        path = path[1:]
+    return quote(path, safe="/")
+
+
+def read_volume_file(workspace: str, token: str, volume_path: str, *, timeout: int = 15) -> str:
+    """Read a UC Volume file's contents as UTF-8 text via the Files API.
+
+    Raises RuntimeError with an actionable reason on any failure (missing file,
+    no READ grant -> HTTP 403/404, network). Access is governed entirely by the
+    UC grant on the Volume path for the caller's token — ucode adds no ACL of
+    its own."""
+    hostname = workspace_hostname(workspace)
+    url = f"https://{hostname}/api/2.0/fs/files/{_volume_files_api_path(volume_path)}"
+    request = urllib_request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib_request.urlopen(request, timeout=timeout) as response:
+            body = response.read()
+        _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
+        return body.decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        except Exception:
+            detail = ""
+        _debug(f"GET {url}", f"HTTP {exc.code} {exc.reason}")
+        reason = f"HTTP {exc.code} {exc.reason}"
+        excerpt = detail.strip()[:200]
+        if excerpt:
+            reason = f"{reason}: {excerpt}"
+        raise RuntimeError(f"Could not read Volume file `{volume_path}`: {reason}") from exc
+    except urllib_error.URLError as exc:
+        raise RuntimeError(
+            f"Could not read Volume file `{volume_path}`: network error: {exc.reason}"
+        ) from exc
+
+
+def list_volume_dir(
+    workspace: str, token: str, volume_path: str, *, timeout: int = 15
+) -> list[dict]:
+    """List entries directly under a UC Volume directory via the Files API.
+
+    Returns each entry as a dict with at least `path` (absolute `/Volumes/...`),
+    `name`, and `is_directory`. Raises RuntimeError on failure (mirrors
+    `read_volume_file`). The listing is not recursive — recurse by calling again
+    on any entry whose `is_directory` is true."""
+    hostname = workspace_hostname(workspace)
+    url = f"https://{hostname}/api/2.0/fs/directories/{_volume_files_api_path(volume_path)}"
+    payload, reason = _http_get_json(url, token, timeout=timeout)
+    if reason:
+        raise RuntimeError(f"Could not list Volume directory `{volume_path}`: {reason}")
+    if not isinstance(payload, dict):
+        return []
+    contents = payload.get("contents")
+    if not isinstance(contents, list):
+        return []
+    return [
+        entry
+        for entry in contents
+        if isinstance(entry, dict) and isinstance(entry.get("path"), str)
+    ]
 
 
 # Experiment tag Databricks sets when an experiment's traces are written to a

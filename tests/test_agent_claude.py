@@ -297,6 +297,60 @@ class TestClaudeValidateCmd:
         assert cmd[idx + 1] == "1"
 
 
+class TestTemplateSettings:
+    """apply/revert of template permissions+hooks against the managed settings
+    file (Phase 3). Uses a real temp settings.json so the round-trip is exact."""
+
+    def _settings_path(self, monkeypatch, tmp_path, initial):
+        path = tmp_path / "ucode-settings.json"
+        if initial is not None:
+            path.write_text(json.dumps(initial), encoding="utf-8")
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", path)
+        return path
+
+    def _read(self, path):
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_apply_noop_when_settings_absent(self, monkeypatch, tmp_path):
+        # Templates run after agent config; no file means Claude wasn't set up.
+        path = self._settings_path(monkeypatch, tmp_path, None)
+        claude.apply_template_settings({"deny": ["Bash(rm*)"]}, {})
+        assert not path.exists()
+
+    def test_apply_unions_deny_onto_existing(self, monkeypatch, tmp_path):
+        path = self._settings_path(monkeypatch, tmp_path, {"permissions": {"deny": ["WebSearch"]}})
+        claude.apply_template_settings({"deny": ["WebSearch", "Bash(rm*)"]}, {})
+        assert self._read(path)["permissions"]["deny"] == ["WebSearch", "Bash(rm*)"]
+
+    def test_apply_concatenates_hooks_per_event(self, monkeypatch, tmp_path):
+        existing_hook = {"hooks": [{"type": "command", "command": "existing"}]}
+        path = self._settings_path(monkeypatch, tmp_path, {"hooks": {"Stop": [existing_hook]}})
+        new_hook = {"hooks": [{"type": "command", "command": "from-template"}]}
+        claude.apply_template_settings({}, {"Stop": [new_hook]})
+        assert self._read(path)["hooks"]["Stop"] == [existing_hook, new_hook]
+
+    def test_revert_strips_added_leaves_ucode_deny(self, monkeypatch, tmp_path):
+        path = self._settings_path(monkeypatch, tmp_path, {"permissions": {"deny": ["WebSearch"]}})
+        perms = {"deny": ["WebSearch", "Bash(rm*)"], "allow": ["Read"]}
+        hooks = {"Stop": [{"hooks": [{"type": "command", "command": "from-template"}]}]}
+        claude.apply_template_settings(perms, hooks)
+        claude.revert_template_settings(perms, hooks)
+        # The ucode-owned WebSearch deny survives; template additions are gone,
+        # and an emptied allow list / hooks block are pruned entirely.
+        settings = self._read(path)
+        assert settings["permissions"] == {"deny": ["WebSearch"]}
+        assert "hooks" not in settings
+
+    def test_apply_then_revert_round_trips_to_original(self, monkeypatch, tmp_path):
+        original = {"permissions": {"deny": ["WebSearch"]}, "env": {"X": "1"}}
+        path = self._settings_path(monkeypatch, tmp_path, original)
+        perms = {"deny": ["Bash(rm*)"], "ask": ["Write"]}
+        hooks = {"PreToolUse": [{"hooks": [{"type": "command", "command": "t"}]}]}
+        claude.apply_template_settings(perms, hooks)
+        claude.revert_template_settings(perms, hooks)
+        assert self._read(path) == original
+
+
 class TestWriteToolConfigMcpRegistration:
     def _common_patches(self, monkeypatch, calls):
         monkeypatch.setattr(claude, "backup_existing_file", lambda *a, **kw: True)

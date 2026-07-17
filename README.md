@@ -92,6 +92,39 @@ Options are shown in this order:
 Discovered external MCP connections are listed directly. MCP auth uses a Databricks token that
 `ucode` sets when launching each tool.
 
+### Role/project templates (optional)
+
+If your organization publishes a **template store** — a Databricks Unity Catalog
+Volume holding curated agent bundles — `ucode configure` can fetch and apply the
+templates that apply to you. A template can bundle any of:
+
+- MCP tool sets (applied additively, so your own MCP servers are preserved)
+- Claude Code skills
+- instruction files (`CLAUDE.md` content)
+- permission policies (allow / deny / ask)
+- hooks
+
+Templates are selected automatically from your Databricks group membership, or
+explicitly by name:
+
+```bash
+ucode configure                       # auto-detect templates from your groups
+ucode configure --role data-engineer  # apply a named role bundle (skips auto-detect)
+ucode configure --template shared --template data-engineer  # apply several
+```
+
+Point at a specific store, or opt out entirely:
+
+```bash
+ucode configure --templates-volume /Volumes/<catalog>/<schema>/<volume>
+ucode configure --skip-templates      # gateway/agents only, no templates
+```
+
+Templates only augment a working gateway config — if the store is unreachable,
+configuration still succeeds. A template that names a tool or model you can't
+access simply skips it. Everything a template applies is tracked, and
+`ucode revert` removes it (leaving your own config intact).
+
 ---
 
 ## Other Commands
@@ -107,6 +140,9 @@ Discovered external MCP connections are listed directly. MCP auth uses a Databri
 | `ucode configure --profiles DEFAULT` | Configure using existing Databricks CLI profiles (hosts come from `~/.databrickscfg`) |
 | `ucode configure --profiles DEFAULT --use-pat` | Authenticate with the profile's personal access token — no browser login |
 | `ucode configure --skip-validate` | Write configs without sending a test message through each agent |
+| `ucode configure --role data-engineer` | Apply a named role/project template bundle (skips group auto-detect) |
+| `ucode configure --templates-volume <path>` | Fetch templates from a specific Unity Catalog Volume store |
+| `ucode configure --skip-templates` | Configure gateway/agents only; don't fetch or apply any templates |
 
 ## Managed Local Files
 
