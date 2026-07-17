@@ -134,19 +134,29 @@ review. Use Python type declarations: a `@dataclass`, a `Protocol`, a type alias
 typed function signature. Do not paste an implementation body.
 
 ```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal, Protocol
+
+from ucode.config_io import ToolSpec
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderService:
     name: str
-    provider_type: str          # e.g. "databricks", "bedrock"
+    provider_type: str  # e.g. "databricks", "bedrock"
     base_url: str
+
 
 # Discriminated result: a different set of literals fails review.
 ValidateResult = Literal["ok", "auth-failed", "gateway-unreachable", "missing"]
 
-def resolve_provider_service(
-    workspace: str,
-    model: str,
-) -> ProviderService: ...        # raises ConfigError; never returns None
+
+# resolve_provider_service raises ConfigError; it never returns None.
+def resolve_provider_service(workspace: str, model: str) -> ProviderService: ...
+
 
 class ToolConfigWriter(Protocol):
     # Additive-only: merges into existing config, never clobbers user keys.

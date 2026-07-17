@@ -115,16 +115,25 @@ model_cache:
 Pinned contract types (a different shape fails review):
 
 ```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderService:
     name: str
     provider_type: str
     base_url: str
 
+
 MODEL_CACHE_TTL_S: int = 900
 
+
+# load_model_cache returns None on a miss, a stale entry, or any read/parse error
+# (R6). It never raises.
 def load_model_cache(workspace: str) -> list[ProviderService] | None: ...
-    # None on miss, stale entry, or any read/parse error (R6). Never raises.
+
 
 def save_model_cache(workspace: str, services: list[ProviderService]) -> None: ...
 ```
